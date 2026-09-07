@@ -1,0 +1,78 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global/global}
+    \entry{Welsh:2001:SAW:502034.502057}{inproceedings}{}{}
+      \name{author}{3}{}{%
+        {{hash=076cf707817a3f8501c3ecc48b1b2268}{%
+           family={Welsh},
+           familyi={W\bibinitperiod},
+           given={Matt},
+           giveni={M\bibinitperiod}}}%
+        {{hash=476b9e41520047f68ef13e32a0872165}{%
+           family={Culler},
+           familyi={C\bibinitperiod},
+           given={David},
+           giveni={D\bibinitperiod}}}%
+        {{hash=781eec3551b6a48285790e48b277e991}{%
+           family={Brewer},
+           familyi={B\bibinitperiod},
+           given={Eric},
+           giveni={E\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Banff, Alberta, Canada}%
+      }
+      \list{publisher}{1}{%
+        {ACM}%
+      }
+      \strng{namehash}{c1a1f25511b43d0c663d5fccb0f0a5d8}
+      \strng{fullhash}{395d889a5693f463d8dd592062e3bfc3}
+      \strng{fullhashraw}{395d889a5693f463d8dd592062e3bfc3}
+      \strng{bibnamehash}{395d889a5693f463d8dd592062e3bfc3}
+      \strng{authorbibnamehash}{395d889a5693f463d8dd592062e3bfc3}
+      \strng{authornamehash}{c1a1f25511b43d0c663d5fccb0f0a5d8}
+      \strng{authorfullhash}{395d889a5693f463d8dd592062e3bfc3}
+      \strng{authorfullhashraw}{395d889a5693f463d8dd592062e3bfc3}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the Eighteenth ACM Symposium on Operating Systems Principles}
+      \field{isbn}{1-58113-389-8}
+      \field{series}{SOSP '01}
+      \field{title}{SEDA: An Architecture for Well-conditioned, Scalable Internet Services}
+      \field{year}{2001}
+      \field{pages}{230\bibrangedash 243}
+      \range{pages}{14}
+      \verb{doi}
+      \verb 10.1145/502034.502057
+      \endverb
+      \verb{urlraw}
+      \verb http://doi.acm.org/10.1145/502034.502057
+      \endverb
+      \verb{url}
+      \verb http://doi.acm.org/10.1145/502034.502057
+      \endverb
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

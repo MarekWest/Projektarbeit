@@ -1,0 +1,5 @@
+\begin{MintedVerbatim}[commandchars=\\\{\},codes={\catcode`\$=3\catcode`\^=7\catcode`\_=8\relax}]
+\PYG{k}{pub}\PYG{+w}{ }\PYG{k}{fn}\PYG{+w}{ }\PYG{n+nf}{invoke}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n+nb+bp}{self}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZhy{}\PYGZgt{}}\PYG{+w}{ }\PYG{n+nb}{Option}\PYG{o}{\PYGZlt{}}\PYG{n}{RwLockReadGuard}\PYG{o}{\PYGZlt{}}\PYG{o}{\PYGZsq{}}\PYG{n+nb}{\PYGZus{}}\PYG{p}{,}\PYG{+w}{ }\PYG{n}{T}\PYG{o}{\PYGZgt{}}\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{p}{\PYGZob{}}
+\PYG{+w}{    }\PYG{n+nb+bp}{self}\PYG{p}{.}\PYG{n}{obj}\PYG{p}{.}\PYG{n}{as\PYGZus{}ref}\PYG{p}{(}\PYG{p}{)}\PYG{o}{?}\PYG{p}{.}\PYG{n}{try\PYGZus{}read}\PYG{p}{(}\PYG{p}{)}
+\PYG{p}{\PYGZcb{}}
+\end{MintedVerbatim}

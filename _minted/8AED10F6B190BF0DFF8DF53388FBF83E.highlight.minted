@@ -1,0 +1,4 @@
+\begin{MintedVerbatim}[commandchars=\\\{\},codes={\catcode`\$=3\catcode`\^=7\catcode`\_=8\relax}]
+\PYG{c+c1}{// Korrigierter Funktionszeiger:}
+\PYG{n}{permission\PYGZus{}denied}\PYG{+w}{ }\PYG{k}{as}\PYG{+w}{ }\PYG{o}{*}\PYG{k}{const}\PYG{+w}{ }\PYG{p}{(}\PYG{p}{)}
+\end{MintedVerbatim}

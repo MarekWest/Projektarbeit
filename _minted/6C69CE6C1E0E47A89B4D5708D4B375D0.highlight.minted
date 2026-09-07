@@ -1,0 +1,7 @@
+\begin{MintedVerbatim}[commandchars=\\\{\},codes={\catcode`\$=3\catcode`\^=7\catcode`\_=8\relax}]
+[user@computer thesis]\PYGZdl{} ls \PYGZhy{}la
+total 12
+drwxr\PYGZhy{}xr\PYGZhy{}x  3 user user 4096 Apr 28 19:09 .
+drwxr\PYGZhy{}xr\PYGZhy{}x 23 user user 4096 Apr 28 19:09 ..
+drwxr\PYGZhy{}xr\PYGZhy{}x  7 user user 4096 Apr 28 20:12 folder
+\end{MintedVerbatim}

@@ -1,0 +1,7 @@
+\begin{MintedVerbatim}[commandchars=\\\{\},codes={\catcode`\$=3\catcode`\^=7\catcode`\_=8\relax}]
+\PYG{k+kn}{package}\PYG{+w}{ }\PYG{n+nx}{main}
+
+\PYG{k+kn}{import}\PYG{+w}{ }\PYG{l+s}{\PYGZdq{}fmt\PYGZdq{}}
+
+\PYG{k+kd}{func}\PYG{+w}{ }\PYG{n+nx}{main}\PYG{p}{(}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZob{}}\PYG{+w}{ }\PYG{n+nx}{fmt}\PYG{p}{.}\PYG{n+nx}{Println}\PYG{p}{(}\PYG{l+s}{\PYGZdq{}Hello world!\PYGZdq{}}\PYG{p}{)}\PYG{+w}{ }\PYG{p}{\PYGZcb{}}
+\end{MintedVerbatim}

@@ -1,0 +1,123 @@
+\chapter{Optimierung, Stabilisierung und Integration des Capability-Subsystems}
+
+\section{Motivation und Ausgangslage}
+
+Moderne Mikrokern- und Betriebssystemarchitekturen setzen zur Reduzierung der Angriffsfläche konsequent auf das Prinzip der minimalen Rechtevergabe (\textit{Principle of Least Privilege}). Ein zentraler Baustein hierfür sind Capabilities: kryptografisch oder architektonisch unschmiedbare Token, die eine Ressource referenzieren und die darauf zulässigen Operationen fest an die Identität des Tokens binden.
+
+Die vorliegende Arbeit baut direkt auf der Masterarbeit von Julian Schnock auf, deren Entwicklungsstand aus September 2025 datiert. In dieser Vorarbeit wurde ein grundlegendes Capability-System für das Betriebssystem implementiert, welches auf typisierten Capabilities sowie task-lokalen Capability Spaces (CSpaces) basiert. Obwohl diese Basisarchitektur die grundlegende Machbarkeit nachwies, wies der Stand von September 2025 signifikante Schwachstellen hinsichtlich Nebenläufigkeit und Fehlerbehandlung auf. Zudem existierte eine erhebliche Versionsdiskrepanz zum weiterentwickelten Hauptzweig des Kernels.
+
+Das Ziel dieses einleitenden Kapitels ist die Beseitigung bestehender Synchronisations- und Stabilitätsprobleme sowie die Zusammenführung (Merge) des Capability-Zweigs mit dem aktuellen Kernel-Stand als Fundament für die Integration des Messaging-Systems und von Shared Memory.
+
+
+\section{Synchronisationsoptimierung: Umstellung von Mutex auf Reader-Writer-Locks}
+
+\subsection{Problemstellung und Flaschenhals}
+
+Im ursprünglichen Entwurf wurden gekapselte Ressourcen innerhalb einer \texttt{Capability<T>} mittels eines gegenseitigen Ausschlusses (\texttt{obj: Option<Arc<Mutex<T>>>>}) synchronisiert. Ebenso erfolgte der Zugriff auf den CSpace ausschließlich über eine strikt exklusive \texttt{.invoke()}-Methode.
+
+Bei der praktischen Ausführung von Systemaufrufen im Dispatcher dominieren jedoch Lesezugriffe (z.\,B. das Auslesen von Zugriffsrechten, Deskriptorprüfungen oder das Abfragen von Metadaten). Durch den Einsatz von Mutices sperrten sich nebenläufige Threads gegenseitig aus, selbst wenn parallel lediglich lesend auf dieselben Datenstrukturen zugegriffen wurde (\textit{Lock Contention}). Dies verhinderte die Skalierung auf Mehrkernsystemen und stellte einen massiven Durchsatzflaschenhals dar.
+
+
+\subsection{Implementierte Lösung}
+
+Um paralleles Lesen zu ermöglichen, wurde die interne Synchronisation von \texttt{Mutex<T>} auf \texttt{RwLock<T>} umgestellt. Dies erforderte eine semantische Auftrennung der Zugriffsschnittstelle in zwei Pfade:
+
+\paragraph{Nebenläufiger Lesezugriff (\texttt{invoke}):}
+\begin{rustcode}
+pub fn invoke(&self) -> Option<RwLockReadGuard<'_, T>> {
+    self.obj.as_ref()?.try_read()
+}
+\end{rustcode}
+Über \texttt{try\_read()} erhalten beliebig viele Threads simultanen Lesezugriff auf die Ressource, ohne einander zu blockieren.
+
+\paragraph{Exklusiver Schreibzugriff (\texttt{invoke\_mut}):}
+\begin{rustcode}
+pub fn invoke_mut(&self) -> Option<RwLockWriteGuard<'_, T>> {
+    self.obj.as_ref()?.try_write()
+}
+\end{rustcode}
+Über \texttt{try\_write()} wird ein exklusiver Lock angefordert, der ausschließlich für strukturelle Modifikationen reserviert ist.
+
+
+\subsection{Anpassung der Aufrufstellen und Resultat}
+
+Sämtliche Aufrufstellen im Kernel wurden entsprechend ihrer Zugriffsmuster refaktoriert. Modifizierende Operationen – insbesondere das Delegieren (\textit{Sharing}) oder Entziehen (\textit{Revocation}) von Rechten sowie das Registrieren von Naming-Capabilities – fordern den Lock nun explizit via \texttt{cspace.invoke\_mut()} an. Standardmäßige Abfragen nutzen den parallelen \texttt{invoke()}-Pfad.
+
+Hierdurch entfällt der gegenseitige Ausschluss bei rein lesenden Zugriffen im Dispatcher vollständig, während die Datenintegrität bei Modifikationen gewahrt bleibt.
+
+
+\section{Behebung von Kernel-Panics im Fehlerpfad des Dispatchers}
+
+\subsection{Fehleranalyse}
+
+Wird ein Systemaufruf über den CSpace abgewickelt, muss der Kernel fehlgeschlagene Autorisierungen (z.\,B. fehlende Rechte, ungültige Deskriptoren oder ein abgewiesener Lock via \texttt{try\_read}) abfangen und kontrolliert an den User-Space melden.
+
+Im Stand der Vorarbeit führte ein Validierungsfehler jedoch reproduzierbar zu einem Kernel-Absturz (\textit{Panic}). Die Ursache lag in der Resolver-Funktion \texttt{get\_capability\_entry()}:
+
+\begin{rustcode}
+// Fehlerhafter Aufruf:
+permission_denied() as *const ()
+\end{rustcode}
+
+Statt der Funktionsadresse der Fehlerbehandlungsroutine wurde der Rückgabewert des Funktionsaufrufs \texttt{permission\_denied()} als Rohzeiger gecastet. Der Low-Level-Dispatcher interpretierte diesen Rückgabewert fälschlicherweise als Zieladresse für den Funktionssprung, sprang in ungültigen Speicher und löste damit eine Kernel-Panic aus.
+
+
+\subsection{Korrektur und Stabilität}
+
+Die Behebung erfolgte durch die Übergabe des tatsächlichen Funktionszeigers:
+
+\begin{rustcode}
+// Korrigierter Funktionszeiger:
+permission_denied as *const ()
+\end{rustcode}
+
+Der Dispatcher verzweigt im Fehlerfall nun zuverlässig in die vorgesehene Routine, belegt das Register \texttt{rax} mit dem entsprechenden Fehlercode (z.\,B. \texttt{-EPERM}) und kehrt geordnet in den User-Space zurück.
+
+
+\section{Rebase und Synchronisation mit dem aktuellen Kernel-Stand}
+
+Der Capability-Branch basierte auf dem Stand von September 2025. Um die Weiterentwicklung (insbesondere Shared Memory und Messaging) voranzutreiben, war ein vollständiger Rebase auf den aktuellen Entwicklungszweig des Betriebssystems erforderlich.
+
+
+\subsection{Konsolidierung der ABI und Datenstrukturen (\texttt{shared\_types.rs})}
+
+Zur Vereinheitlichung der Schnittstelle zwischen Kernel und User-Space mussten zentrale Datenstrukturen angepasst werden:
+
+\begin{itemize}
+    \item \textbf{Rechte- und Dateioperationen:} Die \texttt{struct Capability} wurde in \texttt{shared\_types.rs} überführt. Um das Teilen von Capabilities über reguläre Dateioperationen zu unterstützen, wurde das Flag \texttt{SHARE} als neue \texttt{OpenOption} ergänzt.
+    \item \textbf{ABI-Verschiebungen:} Durch parallele Entwicklungen im Hauptzweig hatten sich fundamentale Enums verschoben; diese Diskrepanzen wurden synchronisiert (u.\,a. \texttt{SeekOrigin::Current} von 3 auf 4 sowie \texttt{FileType::Link} von 10 auf 16), um Fehlinterpretationen auf Systemaufrufebene zu verhindern.
+\end{itemize}
+
+
+\subsection{Namensraum-Restriktionen und Sicherheitsaspekte (\texttt{naming/lib.rs}, \texttt{sys\_naming})}
+
+Ein struktureller Konflikt zwischen dem traditionellen hierarchischen Dateisystem und dem strikten Capability-Paradigma trat im Naming-Subsystem zutage:
+
+\begin{itemize}
+    \item \textbf{Isolation und Zugriffsbeschränkung:} Im vorliegenden Capability-Modell besitzt ein Prozess keinen impliziten Zugriff auf den gesamten Verzeichnisbaum, sondern ausschließlich auf jene Ordner und Ressourcen, für die ihm explizit ein Token delegiert wurde.
+    \item \textbf{Deaktivierung von \texttt{sys\_readdir} und \texttt{cwd}:} Funktionen wie \texttt{sys\_readdir} sowie das Abfragen bzw. Setzen des aktuellen Arbeitsverzeichnisses (\texttt{cwd} in \texttt{naming/lib.rs}) setzen voraus, dass Verzeichnishierarchien global traversiert werden können. Würde einem Prozess das unbeschränkte Auslesen fremder Ordnerinhalte gestattet, liefe dies dem Schutzkonzept zuwider. Da sich dieses Problem aufgrund der fundamentalen Struktur des Capability-Systems nicht trivial auflösen ließ, wurden \texttt{sys\_readdir} und \texttt{cwd} vorerst deaktiviert bzw. auskommentiert.
+\end{itemize}
+
+Compilerwarnungen in \texttt{naming/lib.rs} wurden im Rahmen dieses Schritts bewusst zurückgestellt, um die Portierung nicht durch rein kosmetische Änderungen zu verplichten.
+
+
+\subsection{Überarbeitung des Syscall-Dispatchers und Low-Level-Register-Management}
+
+Die weitreichendsten Änderungen erfolgten im Assembly-Dispatcher des Kernels:
+
+\begin{itemize}
+    \item \textbf{Ablösung der Syscall-Table:} Die ehemals statische Systemaufruf-Tabelle des Hauptsystems wurde entfernt. Stattdessen wird jeder Systemaufruf dynamisch über \texttt{get\_capability\_entry()} aufgelöst, womit die Autorisierung fest in den Dispatching-Pfad eingebettet ist.
+    \item \textbf{Registersicherung für \texttt{get\_capability\_entry}:} Da der Aufruf von \texttt{get\_capability\_entry} Register überschreiben würde, müssen die CPU-Register an dieser Stelle im Dispatcher erneut gesichert werden (\texttt{// Save all Registers again because get\_capability\_entry would overwrite them}).
+    \item \textbf{Entfernen von \texttt{r12}--\texttt{r15} und Register-Begradigung:} Die Callee-Saved-Register \texttt{r12}, \texttt{r13}, \texttt{r14} und \texttt{r15} wurden im Zuge der Systemweiterentwicklung an dieser Stelle nicht mehr benötigt. Um den Stack-Overhead während der zusätzlichen Sicherung zu minimieren und den Mehraufwand zu kompensieren, wurden \texttt{push}- und \texttt{pop}-Operationen für \texttt{r12}--\texttt{r15} vollständig aus dem Dispatcher entfernt.
+    \item \textbf{Korrektur der Stack-Reihenfolge:} Die Wiederherstellung von \texttt{rbx} wurde korrigiert und logisch hinter \texttt{rcx} eingereiht, um eine korrekte Stack-Ausrichtung zu gewährleisten und Fehlbelegungen bei der Rückkehr aus dem Trap-Handler auszuschließen.
+\end{itemize}
+
+
+\subsection{Testumgebung und Verifikation (\texttt{api.rs}, \texttt{test/pipe-rs})}
+
+Um die korrekte Funktion des zusammengeführten Kernels zu verifizieren, wurde die Test-Suite isoliert:
+
+\begin{itemize}
+    \item In \texttt{api.rs} wurden gezielte Funktionstests für die Capability-Schnittstellen integriert.
+    \item In \texttt{test/pipe-rs} wurden neuere Testfälle (\texttt{test1} und \texttt{test2}) temporär aus der Testausführung entfernt. Auf diese Weise konnte das Zusammenspiel aus Interprozesskommunikation (Pipes) und CSpaces deterministisch und frei von Nebeneffekten anderer, noch in Entwicklung befindlicher Subsysteme validiert werden.
+\end{itemize}
