@@ -1,0 +1,31 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.loa
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+
+# Minted / Pygments cache
+_minted*/
+_*.config.minted
+
+# TeXStudio / Editor files
+*.tdo
+*.upa
+*.upb
+*.backup
+*.bak
+*~
+.DS_Store
