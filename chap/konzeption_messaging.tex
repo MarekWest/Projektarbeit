@@ -1,0 +1,201 @@
+\chapter{Konzeption eines sicheren Capability-basierten Messaging-Systems (Vorbereitung der Masterarbeit)}
+\label{chap:konzeption_messaging}
+
+\section{Motivation: Sicherheitsdefizite bisheriger Delegationsmechanismen}
+
+In einem strikten Capability-Betriebssystem wie D3OS dürfen Berechtigungen nicht über globale Tabellen oder implizite Prozesshierarchien verwaltet werden. Stattdessen werden unfälschbare Zugriffstoken direkt an Threads gebunden. Die Delegierung (\textit{Sharing}) einer solchen Capability an einen anderen Prozess erfordert zwingend einen sicheren Transportkanal.
+
+Im bisherigen Stand des Systems (aufbauend auf der Vorarbeit) wurden für die Übertragung von Capabilities herkömmliche Pipes zweckentfremdet. Diese Lösung birgt gravierende Sicherheits- und Architekturdefizite:
+
+\begin{itemize}
+    \item \textbf{Mangelnde Zugriffsisolation:} Pipes besitzen keinen strikt prozessgebundenen Schutzraum; jeder Prozess, der einen Deskriptor auf die Pipe hält oder erlangt, kann Daten daraus lesen.
+    \item \textbf{Abfanggefahr (Eavesdropping / Man-in-the-Middle):} Bei der Weitergabe von Capabilities über eine Pipe kann ein unautorisierter Dritter die übertragenen Rechte abfangen oder manipulieren, bevor der intendierte Empfänger sie konsumiert.
+    \item \textbf{Bruch des Capability-Paradigmas:} Die Delegation erfolgt ungeschützt über einen Stream von Bytes, anstatt atomar und typisiert als First-Class-Kernelobjekt übertragen zu werden.
+\end{itemize}
+
+Das übergeordnete Ziel der anstehenden Masterarbeit ist daher die vollständige Ablösung von Pipes durch ein synchrones, Capability-basiertes Messaging-System (IPC), über welches Capabilities direkt, atomar und isoliert zwischen Threads delegiert werden können.
+
+
+\section{Analyse alternativer IPC-Paradigmen}
+
+Für mikrokerngestützte IPC-Systeme existieren in modernen Rust-Betriebssystemen unterschiedliche Ansätze, die im Vorfeld auf ihre Eignung für D3OS geprüft wurden:
+
+\subsection{Hubris: Das Lease-Modell}
+
+Das Betriebssystem Hubris nutzt sogenannte \textit{Leases}, bei denen der Sender dem Empfänger temporär Zugriff auf definierte Speicherbereiche gewährt.
+
+\begin{itemize}
+    \item \textbf{Hardware-Voraussetzung:} Hubris zielt primär auf eingebettete Systeme mit einer Memory Protection Unit (MPU) ab, die beliebige Speicherregionen mit variabler Größe und hardwarenahen Schutzmasken isolieren kann.
+    \item \textbf{Inkompatibilität mit D3OS:} D3OS operiert auf Standard-x86\_64-Hardware mit einer Memory Management Unit (MMU) und vierstufiger Seitentabelle (PML4). Die MMU erzwingt eine feste Granularität von 4-KiB-Pages. Müsste ein Prozess einem Kommunikationspartner lediglich Zugriff auf eine 50-Byte-Struktur gewähren, erhielte dieser zwangsläufig Zugriff auf die gesamten verbleibenden 4046 Bytes der Page. Dies führt entweder zu erheblichem internen Speicherverschnitt oder verletzt das Prinzip der minimalen Rechtevergabe eklatant.
+\end{itemize}
+
+\subsection{Xous: Page Swapping}
+
+Das Mikrokern-Betriebssystem Xous realisiert größere IPC-Übertragungen via \textit{Page Swapping}, indem eine physische Speicherseite aus dem virtuellen Adressraum des Senders aus- und in den des Empfängers eingehängt wird.
+
+\begin{itemize}
+    \item \textbf{Nachteile:} Auch hier erzwingt die MMU eine strikte 4-KiB-Ausrichtung (\textit{page-aligned}). Jeder User-Space-Datenpuffer müsste exakt an einer Page-Grenze beginnen. Dies erfordert hochkomplexe, dedizierte Allokatoren im User-Space und erzeugt bei kleinen Nachrichten massiven Overhead.
+    \item \textbf{Architektur-Diskrepanz:} Xous nutzt zur Adressierung globale Prozess- bzw. Server-IDs. Ein globaler Namensraum widerspricht jedoch fundamental dem Capability-Prinzip von D3OS, in dem Zugriffe ausschließlich über nicht-fälschbare, lokale Handles autorisiert werden dürfen.
+\end{itemize}
+
+
+\section{Das gewählte Paradigma: Der seL4-Ansatz}
+
+Aufgrund der genannten Limitierungen adaptiert das Entwurfskonzept für D3OS die Architektur des hochgradig verifizierten Mikrokerns seL4. Dieses Modell zeichnet sich durch drei Kernprinzipien aus:
+
+\begin{itemize}
+    \item \textbf{Synchroner Rendezvous-Mechanismus:} Es existiert kein unbeschränkter Zwischenpuffer im Kernel; der Datentransfer findet erst statt, wenn sowohl Sender als auch Empfänger bereit sind.
+    \item \textbf{Strikte Trennung von Control Plane und Data Plane:}
+    \begin{itemize}
+        \item \textbf{Control Plane (Short IPC):} Kleine Steuernachrichten und Metadaten werden Zero-Copy direkt über die CPU-Register ausgetauscht.
+        \item \textbf{Data Plane (Shared Memory):} Große Nutzdatenmengen werden über gemeinsam genutzten physikalischen Speicher transferiert, dessen Zugriff über Capabilities geregelt wird.
+    \end{itemize}
+    \item \textbf{Pufferlose Endpoints:} Die Kommunikation wird über zustandsbehaftete Endpoint-Kernelobjekte serialisiert, die lediglich Warteschlangen für blockierte Threads verwalten.
+\end{itemize}
+
+
+\section{Kernkomponenten des Messaging-Systems}
+
+Zur Vorbereitung auf die Implementierung wurden die notwendigen Kernel-Datenstrukturen entworfen. Abbildung~\ref{fig:endpoint_architecture} veranschaulicht die Interaktion zwischen den beteiligten Threads und dem Endpoint-Kernelobjekt.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=0.9, transform shape,
+    innerbox/.style={draw=black!60, rectangle, fill=hhuCorporateGrey!20, font=\footnotesize\ttfamily, minimum width=2.6cm, minimum height=0.55cm, align=center},
+    queuebox/.style={draw=hhuCorporateBlue, rectangle, fill=hhuCorporateBlue!10, font=\footnotesize\ttfamily, minimum width=2.6cm, minimum height=0.55cm, align=center},
+    arrow/.style={->, >=stealth, thick, color=hhuCorporateDarkBlue}
+  ]
+    % Outer container Thread A
+    \draw[draw=hhuCorporateDarkBlue, thick, rounded corners=4pt, fill=white] (-1.8,-1.8) rectangle (1.8, 1.6);
+    \node at (0, 1.15) {\textbf{Thread A}};
+    \node[font=\scriptsize] at (0, 0.75) {(Sender / Client)};
+    \node[innerbox] (cspaceA) at (0, 0.1) {CSpace};
+    \node[innerbox] (tcbA) at (0, -0.8) {TCB};
+    \coordinate (threadAbottom) at (0, -1.8);
+
+    % Outer container Endpoint
+    \draw[draw=hhuCorporateDarkBlue, thick, rounded corners=4pt, fill=white] (3.4,-1.8) rectangle (7.0, 1.6);
+    \node at (5.2, 1.1) {\textbf{Endpoint}};
+    \node[queuebox] (recvQ) at (5.2, 0.1) {recv\_queue};
+    \node[queuebox] (sendQ) at (5.2, -0.8) {send\_queue};
+    \coordinate (endpointbottom) at (5.2, -1.8);
+
+    % Outer container Thread B
+    \draw[draw=hhuCorporateDarkBlue, thick, rounded corners=4pt, fill=white] (8.6,-1.8) rectangle (12.2, 1.6);
+    \node at (10.4, 1.15) {\textbf{Thread B}};
+    \node[font=\scriptsize] at (10.4, 0.75) {(Empfänger / Server)};
+    \node[innerbox] (cspaceB) at (10.4, 0.1) {CSpace};
+    \node[innerbox] (tcbB) at (10.4, -0.8) {TCB};
+    \coordinate (threadBbottom) at (10.4, -1.8);
+
+    % Call lines below
+    \draw[arrow] (threadAbottom) -- ++(0,-0.8) -| node[pos=0.25, below, font=\footnotesize] {Ruft \texttt{sys\_seL4\_Send()}} (endpointbottom);
+    \draw[arrow] (threadBbottom) -- ++(0,-0.8) -| node[pos=0.25, below, font=\footnotesize] {Ruft \texttt{sys\_seL4\_Recv()}} (endpointbottom);
+
+  \end{tikzpicture}
+  \caption{Architektur der Kernkomponenten und Endpoint-Interaktion.}
+  \label{fig:endpoint_architecture}
+\end{figure}
+
+\subsection{Thread Control Block (TCB) Erweiterungen}
+
+Der TCB eines Threads wird um spezifische IPC-Felder ergänzt:
+
+\begin{itemize}
+    \item \texttt{ipc\_buffer}: Kein dynamisch allozierter Puffer im Kernel-Heap, sondern eine temporäre Speicherstelle für gesicherte CPU-Register (für den Short-IPC-Fall, falls ein Thread schlafen gelegt werden muss).
+    \item \texttt{ipc\_cap}: Hält eine Kopie der zu delegierenden Capability aus dem senderseitigen CSpace.
+    \item \texttt{badge}: Eine im CSpace des Senders hinterlegte, unschmiedbare Identifikationsnummer (ID), die der Kernel beim Transfer an den Empfänger durchreicht. Anhand dieses Badges kann ein Server eindeutig identifizieren, welcher Client die Nachricht gesendet hat, ohne dass eine globale Prozess-ID nötig ist.
+\end{itemize}
+
+\subsection{Endpoints und Queues}
+
+Ein Endpoint fungiert als reines Synchronisationstor und besitzt zwei interne Warteschlangen:
+
+\begin{itemize}
+    \item \texttt{recv\_queue}: Hält wartende Empfänger-Threads (Status: \texttt{BlockedOnReceive}).
+    \item \texttt{send\_queue}: Hält wartende Sender-Threads (Status: \texttt{BlockedOnSend}).
+\end{itemize}
+
+
+\section{Der Rendezvous-Mechanismus im Detail}
+
+Die Interaktion zwischen den Parteien gliedert sich in drei grundlegende Szenarien:
+
+\paragraph{Szenario A: Empfänger wartet bereits (Server-Modus)}
+\begin{itemize}
+    \item \textbf{Initialzustand:} Thread B ruft \texttt{sys\_seL4\_Recv()} auf. Da keine Nachricht anliegt, wird Thread B in die \texttt{recv\_queue} des Endpoints eingehängt und blockiert (\texttt{BlockedOnReceive}).
+    \item \textbf{Nachrichtenankunft:} Thread A setzt \texttt{sys\_seL4\_Send()} ab.
+    \item \textbf{Transfer:} Der Kernel stellt fest, dass in der \texttt{recv\_queue} bereits ein Empfänger wartet. Die \texttt{send\_queue} wird vollständig umgangen: Der Inhalt des \texttt{ipc\_buffer} bzw. der CPU-Register wird direkt von Thread A zu Thread B transferiert.
+    \item \textbf{Aufwecken:} Thread B wird wieder auf \textit{Runnable} gesetzt; Thread A kann ohne Blockade fortfahren (oder wartet im Falle eines \texttt{Call}-Syscalls auf die Antwort).
+\end{itemize}
+
+\paragraph{Szenario B: Sender trifft vor Empfänger ein (Client-Modus)}
+\begin{itemize}
+    \item \textbf{Initialzustand:} Thread A ruft \texttt{sys\_seL4\_Send()} auf. Der intendierte Empfänger horcht noch nicht am Endpoint.
+    \item \textbf{Blockade:} Thread A wird in den Zustand \texttt{BlockedOnSend} versetzt. Seine Registerinhalte werden im TCB (\texttt{ipc\_buffer}) gesichert, und Thread A wird in die \texttt{send\_queue} eingereiht.
+    \item \textbf{Abholung:} Sobald Thread B später \texttt{sys\_seL4\_Recv()} ausführt, erkennt der Kernel den wartenden Sender, weckt Thread A auf und überträgt die Daten aus dessen \texttt{ipc\_buffer} direkt in den Adressraum bzw. die Register von Thread B.
+\end{itemize}
+
+\paragraph{Szenario C: Delegation von Capabilities und Data Plane}
+Sollen größere Datenmengen ausgetauscht werden, agiert das Messaging-System als Kontrollkanal:
+\begin{enumerate}
+    \item Thread A erzeugt eine Shared-Memory-Capability für einen definierten Speicherbereich und hinterlegt diese im TCB unter \texttt{ipc\_cap}.
+    \item Beim Rendezvous prüft der Kernel die Gültigkeit der Capability und das gesetzte \texttt{SHARE}-Flag (welches im Zuge des Rebase in \texttt{shared\_types.rs} vorbereitet wurde).
+    \item Der Kernel klont die Capability autorisiert in den CSpace von Thread B.
+    \item Nach Abschluss des Short-IPCs besitzen beide Threads eine valide Referenz auf denselben physikalischen RAM-Bereich. Große Payloads können nun ohne Beteiligung des Kernels mit maximaler Geschwindigkeit gelesen und geschrieben werden.
+\end{enumerate}
+
+
+\section{Optimierung: Regulärer Rust-Pfad vs. seL4 Assembler-Fastpath}
+
+Für die Realisierung des Short-IPCs im Rahmen der Masterarbeit werden zwei Entwurfsvarianten evaluiert:
+
+\usetikzlibrary{positioning}
+
+\paragraph{Regulärer Rust-Pfad:}
+\begin{center}
+\begin{tikzpicture}[scale=0.92, transform shape,
+  stepbox/.style={draw=hhuCorporateDarkBlue, rounded corners=2pt, fill=hhuCorporateGrey!20, font=\footnotesize, align=center, inner sep=4pt},
+  flowarrow/.style={->, >=stealth, thick, color=hhuCorporateDarkBlue}
+]
+  \node[stepbox] (reg1) {Register};
+  \node[stepbox, right=0.8cm of reg1] (stack) {Stack\\(RAM)};
+  \node[stepbox, right=0.8cm of stack] (tcb) {TCB\\(RAM)};
+  \node[stepbox, right=0.8cm of tcb] (reg2) {Register\\(Empfänger)};
+
+  \draw[flowarrow] (reg1) -- node[above, font=\scriptsize] {Hardware-Trap} (stack);
+  \draw[flowarrow] (stack) -- node[above, font=\scriptsize] {Rust-Logik} (tcb);
+  \draw[flowarrow] (tcb) -- node[above, font=\scriptsize] {Kontextwechsel} (reg2);
+\end{tikzpicture}
+\end{center}
+
+\paragraph{seL4 Assembler-Fastpath:}
+\begin{center}
+\begin{tikzpicture}[scale=0.92, transform shape,
+  stepbox/.style={draw=hhuCorporateGreen!80!black, rounded corners=2pt, fill=hhuCorporateGreen!15, font=\footnotesize, align=center, inner sep=4pt},
+  flowarrow/.style={->, >=stealth, thick, color=hhuCorporateGreen!80!black}
+]
+  \node[stepbox] (sender) {Register\\(Sender)};
+  \node[stepbox, right=5.2cm of sender] (receiver) {Register\\(Empfänger)};
+
+  \draw[flowarrow] (sender) -- node[above, font=\footnotesize] {Adressraum-Switch (\texttt{CR3})} node[below, font=\scriptsize\itshape] {(True Zero-Copy ohne RAM-Zugriff)} (receiver);
+\end{tikzpicture}
+\end{center}
+
+\subsection*{Der reguläre Rust-Pfad}
+Tritt ein Trap auf, sichert die CPU-Hardware und der Trap-Prolog zunächst alle Register auf den Stack in den RAM. Die Rust-Schedulinglogik liest diese Werte aus dem RAM und kopiert sie in den Ziel-TCB. Nach erfolgtem Thread-Wechsel lädt der Dispatcher die Daten erneut aus dem Speicher in die Register des Empfängers. Dieser dreifache Speicherzugriff führt zu spürbaren Latenzen.
+
+\subsection*{Der seL4 Assembler-Fastpath}
+Für synchrone Short-IPCs, bei denen beide Partner bereits bereitstehen, wird ein hochoptimierter Pfad in x86\_64-Assembly angestrebt:
+\begin{itemize}
+    \item Die Nachrichtendaten (z.\,B. Badges, Syscall-Argumente, Capability-Handles) verbleiben während des gesamten Wechsels physisch in den Allzweckregistern.
+    \item Der Kernel manipuliert lediglich das Page-Directory-Baseregister (\texttt{CR3}) zur Umschaltung des virtuellen Adressraums und passt den Befehlszeiler (\texttt{RIP}) an.
+    \item Der Empfänger erwacht mit den exakten Registerwerten des Senders – es findet kein einziger Lese- oder Schreibzyklus auf den RAM statt (\textit{True Zero-Copy}).
+\end{itemize}
+
+
+\section{Ausblick auf die Masterarbeit}
+
+Die in dieser Projektarbeit durchgeführten Vorarbeiten – die Beseitigung der Lock Contention via \texttt{RwLock}, die Stabilisierung der Fehlerbehandlung im Syscall-Dispatcher, das Einpflegen des \texttt{SHARE}-Flags sowie die Vorbereitung der TCB- und CSpace-Strukturen – schaffen das Fundament für die Masterarbeit.
+
+Auf dieser Basis wird die konkrete Implementierung des seL4-orientierten Endpoint-Modells, der Assembler-Fastpath für Zero-Copy-Short-IPC sowie die vollständige Migration aller prozessübergreifenden Capability-Delegationen weg von unsicheren Pipes hin zum neuen Messaging-System erfolgen.
