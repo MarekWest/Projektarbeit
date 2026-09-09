@@ -60,52 +60,10 @@ Zur Vorbereitung auf die Implementierung wurden die notwendigen Kernel-Datenstru
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[scale=0.9, transform shape,
-    innerbox/.style={draw=black!60, rectangle, fill=hhuCorporateGrey!20, font=\footnotesize\ttfamily, minimum width=2.6cm, minimum height=0.55cm, align=center},
-    queuebox/.style={draw=hhuCorporateBlue, rectangle, fill=hhuCorporateBlue!10, font=\footnotesize\ttfamily, minimum width=2.6cm, minimum height=0.55cm, align=center},
-    arrow/.style={->, >=stealth, thick, color=hhuCorporateDarkBlue}
-  ]
-    % Outer container Thread A
-    \draw[draw=hhuCorporateDarkBlue, thick, rounded corners=4pt, fill=white] (-1.8,-1.8) rectangle (1.8, 1.6);
-    \node at (0, 1.15) {\textbf{Thread A}};
-    \node[font=\scriptsize] at (0, 0.75) {(Sender / Client)};
-    \node[innerbox] (cspaceA) at (0, 0.1) {CSpace};
-    \node[innerbox] (tcbA) at (0, -0.8) {TCB};
-    \coordinate (threadAbottom) at (0, -1.8);
-
-    % Outer container Endpoint
-    \draw[draw=hhuCorporateDarkBlue, thick, rounded corners=4pt, fill=white] (3.4,-1.8) rectangle (7.0, 1.6);
-    \node at (5.2, 1.1) {\textbf{Endpoint}};
-    \node[queuebox] (recvQ) at (5.2, 0.1) {recv\_queue};
-    \node[queuebox] (sendQ) at (5.2, -0.8) {send\_queue};
-    \coordinate (endpointbottom) at (5.2, -1.8);
-
-    % Outer container Thread B
-    \draw[draw=hhuCorporateDarkBlue, thick, rounded corners=4pt, fill=white] (8.6,-1.8) rectangle (12.2, 1.6);
-    \node at (10.4, 1.15) {\textbf{Thread B}};
-    \node[font=\scriptsize] at (10.4, 0.75) {(Empfänger / Server)};
-    \node[innerbox] (cspaceB) at (10.4, 0.1) {CSpace};
-    \node[innerbox] (tcbB) at (10.4, -0.8) {TCB};
-    \coordinate (threadBbottom) at (10.4, -1.8);
-
-    % Call lines below
-    \draw[arrow] (threadAbottom) -- ++(0,-0.8) -| node[pos=0.25, below, font=\footnotesize] {Ruft \texttt{sys\_seL4\_Send()}} (endpointbottom);
-    \draw[arrow] (threadBbottom) -- ++(0,-0.8) -| node[pos=0.25, below, font=\footnotesize] {Ruft \texttt{sys\_seL4\_Recv()}} (endpointbottom);
-
-  \end{tikzpicture}
+  \includegraphics[width=0.95\textwidth]{img/endpoints.png}
   \caption{Architektur der Kernkomponenten und Endpoint-Interaktion.}
   \label{fig:endpoint_architecture}
 \end{figure}
-
-\subsection{Thread Control Block (TCB) Erweiterungen}
-
-Der TCB eines Threads wird um spezifische IPC-Felder ergänzt:
-
-\begin{itemize}
-    \item \texttt{ipc\_buffer}: Kein dynamisch allozierter Puffer im Kernel-Heap, sondern eine temporäre Speicherstelle für gesicherte CPU-Register (für den Short-IPC-Fall, falls ein Thread schlafen gelegt werden muss).
-    \item \texttt{ipc\_cap}: Hält eine Kopie der zu delegierenden Capability aus dem senderseitigen CSpace.
-    \item \texttt{badge}: Eine im CSpace des Senders hinterlegte, unschmiedbare Identifikationsnummer (ID), die der Kernel beim Transfer an den Empfänger durchreicht. Anhand dieses Badges kann ein Server eindeutig identifizieren, welcher Client die Nachricht gesendet hat, ohne dass eine globale Prozess-ID nötig ist.
-\end{itemize}
 
 \subsection{Endpoints und Queues}
 
@@ -116,6 +74,15 @@ Ein Endpoint fungiert als reines Synchronisationstor und besitzt zwei interne Wa
     \item \texttt{send\_queue}: Hält wartende Sender-Threads (Status: \texttt{BlockedOnSend}).
 \end{itemize}
 
+\subsection{Thread Control Block (TCB) Erweiterungen}
+
+Der TCB eines Threads wird um spezifische IPC-Felder ergänzt:
+
+\begin{itemize}
+    \item \texttt{ipc\_buffer}: Kein dynamisch allozierter Puffer im Kernel-Heap, sondern eine temporäre Speicherstelle für gesicherte CPU-Register (für den Short-IPC-Fall, falls ein Thread schlafen gelegt werden muss).
+    \item \texttt{ipc\_cap}: Hält eine Kopie der zu delegierenden Capability aus dem senderseitigen CSpace.
+    \item \texttt{badge}: Eine im CSpace des Senders hinterlegte, unschmiedbare Identifikationsnummer (ID), die der Kernel beim Transfer an den Empfänger durchreicht. Anhand dieses Badges kann ein Server eindeutig identifizieren, welcher Client die Nachricht gesendet hat, ohne dass eine globale Prozess-ID nötig ist.
+\end{itemize}
 
 \section{Der Rendezvous-Mechanismus im Detail}
 
@@ -129,12 +96,26 @@ Die Interaktion zwischen den Parteien gliedert sich in drei grundlegende Szenari
     \item \textbf{Aufwecken:} Thread B wird wieder auf \textit{Runnable} gesetzt; Thread A kann ohne Blockade fortfahren (oder wartet im Falle eines \texttt{Call}-Syscalls auf die Antwort).
 \end{itemize}
 
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{img/receiver_waiting.png}
+  \caption{Ablauf von Szenario A: Empfänger wartet bereits.}
+  \label{fig:receiver_waiting}
+\end{figure}
+
 \paragraph{Szenario B: Sender trifft vor Empfänger ein (Client-Modus)}
 \begin{itemize}
     \item \textbf{Initialzustand:} Thread A ruft \texttt{sys\_seL4\_Send()} auf. Der intendierte Empfänger horcht noch nicht am Endpoint.
     \item \textbf{Blockade:} Thread A wird in den Zustand \texttt{BlockedOnSend} versetzt. Seine Registerinhalte werden im TCB (\texttt{ipc\_buffer}) gesichert, und Thread A wird in die \texttt{send\_queue} eingereiht.
     \item \textbf{Abholung:} Sobald Thread B später \texttt{sys\_seL4\_Recv()} ausführt, erkennt der Kernel den wartenden Sender, weckt Thread A auf und überträgt die Daten aus dessen \texttt{ipc\_buffer} direkt in den Adressraum bzw. die Register von Thread B.
 \end{itemize}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{img/sender_to_early.png}
+  \caption{Ablauf von Szenario B: Sender trifft vor Empfänger ein.}
+  \label{fig:sender_to_early}
+\end{figure}
 
 \paragraph{Szenario C: Delegation von Capabilities und Data Plane}
 Sollen größere Datenmengen ausgetauscht werden, agiert das Messaging-System als Kontrollkanal:
@@ -144,6 +125,13 @@ Sollen größere Datenmengen ausgetauscht werden, agiert das Messaging-System al
     \item Der Kernel klont die Capability autorisiert in den CSpace von Thread B.
     \item Nach Abschluss des Short-IPCs besitzen beide Threads eine valide Referenz auf denselben physikalischen RAM-Bereich. Große Payloads können nun ohne Beteiligung des Kernels mit maximaler Geschwindigkeit gelesen und geschrieben werden.
 \end{enumerate}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{img/shared_memory.png}
+  \caption{Ablauf von Szenario C: Delegation von Capabilities und Data Plane.}
+  \label{fig:shared_memory}
+\end{figure}
 
 
 \section{Optimierung: Regulärer Rust-Pfad vs. seL4 Assembler-Fastpath}
