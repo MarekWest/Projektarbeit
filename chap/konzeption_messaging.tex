@@ -141,18 +141,18 @@ Für die Realisierung des Short-IPCs im Rahmen der Masterarbeit werden zwei Entw
 
 \paragraph{Regulärer Rust-Pfad:}
 \begin{center}
-\begin{tikzpicture}[scale=0.92, transform shape,
+\begin{tikzpicture}[scale=0.82, transform shape,
   stepbox/.style={draw=hhuCorporateDarkBlue, rounded corners=2pt, fill=hhuCorporateGrey!20, font=\footnotesize, align=center, inner sep=4pt},
   flowarrow/.style={->, >=stealth, thick, color=hhuCorporateDarkBlue}
 ]
-  \node[stepbox] (reg1) {Register};
-  \node[stepbox, right=0.8cm of reg1] (stack) {Stack\\(RAM)};
-  \node[stepbox, right=0.8cm of stack] (tcb) {TCB\\(RAM)};
-  \node[stepbox, right=0.8cm of tcb] (reg2) {Register\\(Empfänger)};
+  \node[stepbox] (reg1) {Register\\(Sender)};
+  \node[stepbox, right=2.3cm of reg1] (stack) {Stack\\(RAM)};
+  \node[stepbox, right=2.3cm of stack] (tcb) {TCB\\(RAM)};
+  \node[stepbox, right=2.3cm of tcb] (reg2) {Register\\(Empfänger)};
 
-  \draw[flowarrow] (reg1) -- node[above, font=\scriptsize] {Hardware-Trap} (stack);
-  \draw[flowarrow] (stack) -- node[above, font=\scriptsize] {Rust-Logik} (tcb);
-  \draw[flowarrow] (tcb) -- node[above, font=\scriptsize] {Kontextwechsel} (reg2);
+  \draw[flowarrow] (reg1) -- node[above=3pt, font=\scriptsize] {Syscall} (stack);
+  \draw[flowarrow] (stack) -- node[above=3pt, font=\scriptsize] {Rust-Logik} (tcb);
+  \draw[flowarrow] (tcb) -- node[above=3pt, font=\scriptsize] {Kontextwechsel} (reg2);
 \end{tikzpicture}
 \end{center}
 
