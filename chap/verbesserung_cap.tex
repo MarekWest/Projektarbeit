@@ -2,67 +2,25 @@
 
 \section{Synchronisationsoptimierung: Umstellung von Mutex auf Reader-Writer-Locks}
 
-\subsection{Problemstellung und Flaschenhals}
+Im Stand der Vorarbeit wurden die referenzierten Ressourcen innerhalb einer \texttt{Capability<T>} (\texttt{obj: Option<Arc<Mutex<T>>>>}) sowie der CSpace ausschließlich über einen exklusiven \texttt{Mutex} geschützt. Beim regulären Aufruf im Dispatcher finden jedoch überwiegend Lesezugriffe statt (z.\,B. Rechte- und Deskriptorprüfungen). Durch die exklusive Sperre blockierten sich nebenläufige Threads gegenseitig, selbst wenn sie Daten lediglich lesend abfragten.
 
-Im ursprünglichen Entwurf wurden gekapselte Ressourcen innerhalb einer \texttt{Capability<T>} mittels eines gegenseitigen Ausschlusses (\texttt{obj: Option<Arc<Mutex<T>>>>}) synchronisiert. Ebenso erfolgte der Zugriff auf den CSpace ausschließlich über eine strikt exklusive \texttt{.invoke()}-Methode.
+Zur Behebung dieses Flaschenhalses wurde der interne Lock von \texttt{Mutex<T>} auf \texttt{RwLock<T>} umgestellt und die Schnittstelle in zwei getrennte Pfade aufgeteilt:
 
-Bei der praktischen Ausführung von Systemaufrufen im Dispatcher dominieren jedoch Lesezugriffe (z.\,B. das Auslesen von Zugriffsrechten, Deskriptorprüfungen oder das Abfragen von Metadaten). Durch den Einsatz von Mutices sperrten sich nebenläufige Threads gegenseitig aus, selbst wenn parallel lediglich lesend auf dieselben Datenstrukturen zugegriffen wurde (\textit{Lock Contention}). Dies verhinderte die Skalierung auf Mehrkernsystemen und stellte einen massiven Durchsatzflaschenhals dar.
+\begin{itemize}
+    \item \texttt{invoke(\&self) -> Option<RwLockReadGuard<'\_, T>>}: Nutzt \texttt{try\_read()} für nebenläufige Lesezugriffe ohne gegenseitige Blockaden.
+    \item \texttt{invoke\_mut(\&self) -> Option<RwLockWriteGuard<'\_, T>>}: Nutzt \texttt{try\_write()} für exklusive Schreibzugriffe (z.\,B. beim Teilen oder Entziehen von Rechte-Tokens sowie bei Naming-Operationen).
+\end{itemize}
 
-
-\subsection{Implementierte Lösung}
-
-Um paralleles Lesen zu ermöglichen, wurde die interne Synchronisation von \texttt{Mutex<T>} auf \texttt{RwLock<T>} umgestellt. Dies erforderte eine semantische Auftrennung der Zugriffsschnittstelle in zwei Pfade:
-
-\paragraph{Nebenläufiger Lesezugriff (\texttt{invoke}):}
-\begin{rustcode}
-pub fn invoke(&self) -> Option<RwLockReadGuard<'_, T>> {
-    self.obj.as_ref()?.try_read()
-}
-\end{rustcode}
-Über \texttt{try\_read()} erhalten beliebig viele Threads simultanen Lesezugriff auf die Ressource, ohne einander zu blockieren.
-
-\paragraph{Exklusiver Schreibzugriff (\texttt{invoke\_mut}):}
-\begin{rustcode}
-pub fn invoke_mut(&self) -> Option<RwLockWriteGuard<'_, T>> {
-    self.obj.as_ref()?.try_write()
-}
-\end{rustcode}
-Über \texttt{try\_write()} wird ein exklusiver Lock angefordert, der ausschließlich für strukturelle Modifikationen reserviert ist.
-
-
-\subsection{Anpassung der Aufrufstellen und Resultat}
-
-Sämtliche Aufrufstellen im Kernel wurden entsprechend ihrer Zugriffsmuster refaktoriert. Modifizierende Operationen – insbesondere das Delegieren (\textit{Sharing}) oder Entziehen (\textit{Revocation}) von Rechten sowie das Registrieren von Naming-Capabilities – fordern den Lock nun explizit via \texttt{cspace.invoke\_mut()} an. Standardmäßige Abfragen nutzen den parallelen \texttt{invoke()}-Pfad.
-
-Hierdurch entfällt der gegenseitige Ausschluss bei rein lesenden Zugriffen im Dispatcher vollständig, während die Datenintegrität bei Modifikationen gewahrt bleibt.
+Sämtliche Aufrufstellen im Kernel wurden entsprechend refaktoriert. Schreibende Operationen (wie \texttt{revoke} oder das Registrieren von Naming-Capabilities) fordern den exklusiven Lock nun explizit per \texttt{cspace.invoke\_mut()} an, während standardmäßige Abfragen den parallelen \texttt{invoke()}-Pfad nutzen. Dies ermöglicht nebenläufige Lesezugriffe über mehrere Kerne hinweg ohne Blockaden, da der exklusive Overhead nur noch bei strukturellen Modifikationen anfällt.
 
 
 \section{Behebung von Kernel-Panics im Fehlerpfad des Dispatchers}
 
-\subsection{Fehleranalyse}
+Schlägt die Autorisierung eines Systemaufrufs im CSpace fehl (z.\,B. durch fehlende Rechte, nicht gefundene Capabilities oder einen gescheiterten Lock-Versuch per \texttt{try\_read}), muss der Kernel den Fehler abfangen und kontrolliert an den User-Space zurückgeben. Im Stand der Vorarbeit führte ein Validierungsfehler jedoch reproduzierbar zu einer Kernel-Panic.
 
-Wird ein Systemaufruf über den CSpace abgewickelt, muss der Kernel fehlgeschlagene Autorisierungen (z.\,B. fehlende Rechte, ungültige Deskriptoren oder ein abgewiesener Lock via \texttt{try\_read}) abfangen und kontrolliert an den User-Space melden.
+Die Ursache lag in der Resolver-Funktion \texttt{get\_capability\_entry()}: Dort wurde im Fehlerfall \texttt{permission\_denied() as *const ()} aufgerufen. Statt eines Funktionszeigers wurde der Rückgabewert des Funktionsaufrufs gecastet. Der Low-Level-Dispatcher interpretierte diesen Wert als Zieladresse, sprang in ungültigen Speicher und löste damit den Absturz aus.
 
-Im Stand der Vorarbeit führte ein Validierungsfehler jedoch reproduzierbar zu einem Kernel-Absturz (\textit{Panic}). Die Ursache lag in der Resolver-Funktion \texttt{get\_capability\_entry()}:
-
-\begin{rustcode}
-// Fehlerhafter Aufruf:
-permission_denied() as *const ()
-\end{rustcode}
-
-Statt der Funktionsadresse der Fehlerbehandlungsroutine wurde der Rückgabewert des Funktionsaufrufs \texttt{permission\_denied()} als Rohzeiger gecastet. Der Low-Level-Dispatcher interpretierte diesen Rückgabewert fälschlicherweise als Zieladresse für den Funktionssprung, sprang in ungültigen Speicher und löste damit eine Kernel-Panic aus.
-
-
-\subsection{Korrektur und Stabilität}
-
-Die Behebung erfolgte durch die Übergabe des tatsächlichen Funktionszeigers:
-
-\begin{rustcode}
-// Korrigierter Funktionszeiger:
-permission_denied as *const ()
-\end{rustcode}
-
-Der Dispatcher verzweigt im Fehlerfall nun zuverlässig in die vorgesehene Routine, belegt das Register \texttt{rax} mit dem entsprechenden Fehlercode (z.\,B. \texttt{-EPERM}) und kehrt geordnet in den User-Space zurück.
+Die Behebung erfolgte durch die Übergabe des tatsächlichen Funktionszeigers (\texttt{permission\_denied as *const ()}). Der Assembly-Dispatcher springt die Fehlerroutine nun sauber an, belegt das Rückgaberegister \texttt{rax} mit dem entsprechenden Fehlercode und kehrt kontrolliert in den User-Space zurück.
 
 
 \section{Rebase und Synchronisation mit dem aktuellen Kernel-Stand}
@@ -70,26 +28,14 @@ Der Dispatcher verzweigt im Fehlerfall nun zuverlässig in die vorgesehene Routi
 Der Capability-Branch basierte auf dem Stand von September 2025. Um die Weiterentwicklung (insbesondere Shared Memory und Messaging) voranzutreiben, war ein vollständiger Rebase auf den aktuellen Entwicklungszweig des Betriebssystems erforderlich.
 
 
-\subsection{Konsolidierung der ABI und Datenstrukturen (\texttt{shared\_types.rs})}
+\subsection{Konsolidierung der Binärschnittstelle und Datenstrukturen (\texttt{shared\_types.rs})}
 
-Zur Vereinheitlichung der Schnittstelle zwischen Kernel und User-Space mussten zentrale Datenstrukturen angepasst werden:
-
-\begin{itemize}
-    \item \textbf{Rechte- und Dateioperationen:} Die \texttt{struct Capability} wurde in \texttt{shared\_types.rs} überführt. Um das Teilen von Capabilities über reguläre Dateioperationen zu unterstützen, wurde das Flag \texttt{SHARE} als neue \texttt{OpenOption} ergänzt.
-    \item \textbf{ABI-Verschiebungen:} Durch parallele Entwicklungen im Hauptzweig hatten sich fundamentale Enums verschoben; diese Diskrepanzen wurden synchronisiert (u.\,a. \texttt{SeekOrigin::Current} von 3 auf 4 sowie \texttt{FileType::Link} von 10 auf 16), um Fehlinterpretationen auf Systemaufrufebene zu verhindern.
-\end{itemize}
+Zur Vereinheitlichung der Schnittstelle zwischen Kernel und User-Space wurden zentrale Datenstrukturen in \texttt{shared\_types.rs} konsolidiert. Unter anderem wurde die Struktur \texttt{Capability} überführt und um das Flag \texttt{SHARE} als neue \texttt{OpenOption} ergänzt, um das Teilen von Rechte-Tokens über reguläre Dateioperationen zu ermöglichen. Zudem mussten durch parallele Entwicklungen im Hauptzweig entstandene Abweichungen in der Binärschnittstelle angeglichen werden. Dabei wurden fundamentale Enums auf Systemaufrufebene synchronisiert – wie etwa \texttt{SeekOrigin::Current} (von 3 auf 4) sowie \texttt{FileType::Link} (von 10 auf 16) –, um Fehlinterpretationen von Werten beim Übergang in den Kernel sicher auszuschließen.
 
 
 \subsection{Namensraum-Restriktionen und Sicherheitsaspekte (\texttt{naming/lib.rs}, \texttt{sys\_naming})}
 
-Ein struktureller Konflikt zwischen dem traditionellen hierarchischen Dateisystem und dem strikten Capability-Paradigma trat im Naming-Subsystem zutage:
-
-\begin{itemize}
-    \item \textbf{Isolation und Zugriffsbeschränkung:} Im vorliegenden Capability-Modell besitzt ein Prozess keinen impliziten Zugriff auf den gesamten Verzeichnisbaum, sondern ausschließlich auf jene Ordner und Ressourcen, für die ihm explizit ein Token delegiert wurde.
-    \item \textbf{Deaktivierung von \texttt{sys\_readdir} und \texttt{cwd}:} Funktionen wie \texttt{sys\_readdir} sowie das Abfragen bzw. Setzen des aktuellen Arbeitsverzeichnisses (\texttt{cwd} in \texttt{naming/lib.rs}) setzen voraus, dass Verzeichnishierarchien global traversiert werden können. Würde einem Prozess das unbeschränkte Auslesen fremder Ordnerinhalte gestattet, liefe dies dem Schutzkonzept zuwider. Da sich dieses Problem aufgrund der fundamentalen Struktur des Capability-Systems nicht trivial auflösen ließ, wurden \texttt{sys\_readdir} und \texttt{cwd} vorerst deaktiviert bzw. auskommentiert.
-\end{itemize}
-
-Compilerwarnungen in \texttt{naming/lib.rs} wurden im Rahmen dieses Schritts bewusst zurückgestellt, um die Portierung nicht durch rein kosmetische Änderungen zu verplichten.
+Im Naming-Subsystem zeigte sich ein struktureller Konflikt zwischen dem traditionellen hierarchischen Dateisystem und dem strikten Capability-Modell. Im Capability-Paradigma besitzt ein Prozess keinen impliziten Zugriff auf den gesamten Verzeichnisbaum, sondern ausschließlich auf jene Ordner und Ressourcen, für die ihm explizit ein Token delegiert wurde. Funktionen wie \texttt{sys\_readdir} sowie das Auslesen oder Setzen des aktuellen Arbeitsverzeichnisses (\texttt{cwd} in \texttt{naming/lib.rs}) setzen jedoch eine globale Traversierung voraus. Ein unbeschränktes Auslesen fremder Ordnerinhalte würde das Schutzkonzept untergraben. Da sich dieser Zielkonflikt im Rahmen des Rebases nicht trivial auflösen ließ, wurden \texttt{sys\_readdir} und \texttt{cwd} vorerst deaktiviert, während rein kosmetische Compilerwarnungen in \texttt{naming/lib.rs} zunächst zurückgestellt wurden.
 
 
 \subsection{Überarbeitung des Syscall-Dispatchers und Low-Level-Register-Management}
