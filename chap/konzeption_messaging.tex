@@ -3,7 +3,7 @@
 
 \section{Motivation: Sicherheitsdefizite bisheriger Delegationsmechanismen}
 
-In einem strikten Capability-Betriebssystem wie D3OS dürfen Berechtigungen nicht über globale Tabellen verwaltet werden, stattdessen werden unfälschbare Zugriffstoken direkt im Dispatcher als Parameter übergeben. Die Delegierung (\textit{Sharing}) einer solchen Capability an einen anderen Prozess erfordert zwingend einen sicheren Transportkanal.
+In einem strikten Capability-Betriebssystem wie D3OS~\cite{d3os} dürfen Berechtigungen nicht über globale Tabellen verwaltet werden, stattdessen werden unfälschbare Zugriffstoken direkt im Dispatcher als Parameter übergeben. Die Delegierung (\textit{Sharing}) einer solchen Capability an einen anderen Prozess erfordert zwingend einen sicheren Transportkanal.
 
 Im bisherigen Stand des Systems wurden für die Übertragung von Capabilities herkömmliche Pipes zweckentfremdet, was gravierende Sicherheits- und Architekturdefizite mit sich bringt:
 
@@ -41,7 +41,7 @@ Das Mikrokern-Betriebssystem Xous realisiert größere IPC-Übertragungen durch 
 
 \section{Das gewählte Paradigma: Der seL4-Ansatz}
 
-Aufgrund der genannten Limitierungen lehnt sich das Entwurfskonzept für D3OS an das Messaging-Modell des verifizierten Mikrokerns seL4 an. Dieses Modell zeichnet sich durch drei Kernprinzipien aus:
+Aufgrund der genannten Limitierungen lehnt sich das Entwurfskonzept für D3OS an das Messaging-Modell der L4-Mikrokernarchitektur bzw. des verifizierten Mikrokerns seL4~\cite{elphinstone2016l4} an. Dieses Modell zeichnet sich durch drei Kernprinzipien aus:
 
 \begin{itemize}
     \item \textbf{Synchroner Rendezvous-Mechanismus:} Es existiert kein unbeschränkter Zwischenpuffer im Kernel; der Datentransfer findet erst statt, wenn sowohl Sender als auch Empfänger bereit sind.

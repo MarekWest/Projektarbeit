@@ -11,14 +11,14 @@ Zur Behebung dieses Flaschenhalses wurde der interne Lock von \texttt{Mutex<T>} 
     \item \texttt{invoke\_mut(\&self) -> Option<RwLockWriteGuard<'\_, T>>}: Nutzt \texttt{try\_write()} für exklusive Schreibzugriffe (z.\,B. beim Teilen oder Entziehen von Rechte-Tokens sowie bei Naming-Operationen).
 \end{itemize}
 
-Sämtliche Aufrufstellen im Kernel wurden entsprechend refaktoriert. Schreibende Operationen (wie \texttt{revoke} oder das Registrieren von Naming-Capabilities) fordern den exklusiven Lock nun explizit per \texttt{cspace.invoke\_mut()} an, während standardmäßige Abfragen den parallelen \texttt{invoke()}-Pfad nutzen. Dies ermöglicht nebenläufige Lesezugriffe über mehrere Kerne hinweg ohne Blockaden, da der exklusive Overhead nur noch bei strukturellen Modifikationen anfällt.
+Sämtliche Aufrufstellen im Kernel wurden entsprechend refaktoriert. Schreibende Operationen (wie \texttt{revoke} oder das Registrieren von Naming-Capabilities) fordern den exklusiven Lock nun explizit per \texttt{cspace.invoke\_mut()} an, während standardmäßige Abfragen den parallelen \texttt{invoke()}-Pfad nutzen. Dies ermöglicht nebenläufige Lesezugriffe über mehrere Kerne hinweg ohne Blockaden.
 
 
 \section{Behebung von Kernel-Panics im Fehlerpfad des Dispatchers}
 
 Schlägt die Autorisierung eines Systemaufrufs im CSpace fehl (z.\,B. durch fehlende Rechte, nicht gefundene Capabilities oder einen gescheiterten Lock-Versuch per \texttt{try\_read}), muss der Kernel den Fehler abfangen und kontrolliert an den User-Space zurückgeben. Im Stand der Vorarbeit führte ein Validierungsfehler jedoch reproduzierbar zu einer Kernel-Panic.
 
-Die Ursache lag in der Resolver-Funktion \texttt{get\_capability\_entry()}: Dort wurde im Fehlerfall \texttt{permission\_denied() as *const ()} aufgerufen. Statt eines Funktionszeigers wurde der Rückgabewert des Funktionsaufrufs gecastet. Der Low-Level-Dispatcher interpretierte diesen Wert als Zieladresse, sprang in ungültigen Speicher und löste damit den Absturz aus.
+Die Ursache lag in der Funktion \texttt{get\_capability\_entry()}: Dort wurde im Fehlerfall \texttt{permission\_denied() as *const ()} aufgerufen. Statt eines Funktionszeigers wurde der Rückgabewert des Funktionsaufrufs gecastet. Der Low-Level-Dispatcher interpretierte diesen Wert als Zieladresse, sprang in ungültigen Speicher und löste damit den Absturz aus.
 
 Die Behebung erfolgte durch die Übergabe des tatsächlichen Funktionszeigers (\texttt{permission\_denied as *const ()}). Der Assembly-Dispatcher springt die Fehlerroutine nun sauber an, belegt das Rückgaberegister \texttt{rax} mit dem entsprechenden Fehlercode und kehrt kontrolliert in den User-Space zurück.
 
@@ -28,33 +28,32 @@ Die Behebung erfolgte durch die Übergabe des tatsächlichen Funktionszeigers (\
 Der Capability-Branch basierte auf dem Stand von September 2025. Um die Weiterentwicklung (insbesondere Shared Memory und Messaging) voranzutreiben, war ein vollständiger Rebase auf den aktuellen Entwicklungszweig des Betriebssystems erforderlich.
 
 
-\subsection{Konsolidierung der Binärschnittstelle und Datenstrukturen (\texttt{shared\_types.rs})}
+\subsection{Anpassung der Datenstrukturen an der Kernel-User-Schnittstelle (\texttt{shared\_types.rs})}
 
-Zur Vereinheitlichung der Schnittstelle zwischen Kernel und User-Space wurden zentrale Datenstrukturen in \texttt{shared\_types.rs} konsolidiert. Unter anderem wurde die Struktur \texttt{Capability} überführt und um das Flag \texttt{SHARE} als neue \texttt{OpenOption} ergänzt, um das Teilen von Rechte-Tokens über reguläre Dateioperationen zu ermöglichen. Zudem mussten durch parallele Entwicklungen im Hauptzweig entstandene Abweichungen in der Binärschnittstelle angeglichen werden. Dabei wurden fundamentale Enums auf Systemaufrufebene synchronisiert – wie etwa \texttt{SeekOrigin::Current} (von 3 auf 4) sowie \texttt{FileType::Link} (von 10 auf 16) –, um Fehlinterpretationen von Werten beim Übergang in den Kernel sicher auszuschließen.
+Im Rahmen der Integration des Capability-Systems mussten die Datentypen an der Kernel-User-Schnittstelle in \texttt{shared\_types.rs} angepasst werden, um Capability-Handles bei Systemaufrufen sicher zu übergeben. Unter anderem wurde die Struktur \texttt{Capability} überführt und um das Flag \texttt{SHARE} als neue \texttt{OpenOption} ergänzt, um das Teilen von Rechten über reguläre Dateioperationen zu ermöglichen. Zudem wurden durch parallele Entwicklungen im Hauptzweig entstandene Abweichungen korrigiert. Dabei wurden Enums auf Systemaufrufebene angepasst, wie etwa \texttt{SeekOrigin::Current} (von 3 auf 4) sowie \texttt{FileType::Link} (von 10 auf 16), um Fehlinterpretationen von Werten beim Übergang in den Kernel sicher auszuschließen.
 
 
-\subsection{Namensraum-Restriktionen und Sicherheitsaspekte (\texttt{naming/lib.rs}, \texttt{sys\_naming})}
+\subsection{Zugriffsbeschränkungen im Naming-Modul (\texttt{naming/lib.rs}, \texttt{sys\_naming})}
 
-Im Naming-Subsystem zeigte sich ein struktureller Konflikt zwischen dem traditionellen hierarchischen Dateisystem und dem strikten Capability-Modell. Im Capability-Paradigma besitzt ein Prozess keinen impliziten Zugriff auf den gesamten Verzeichnisbaum, sondern ausschließlich auf jene Ordner und Ressourcen, für die ihm explizit ein Token delegiert wurde. Funktionen wie \texttt{sys\_readdir} sowie das Auslesen oder Setzen des aktuellen Arbeitsverzeichnisses (\texttt{cwd} in \texttt{naming/lib.rs}) setzen jedoch eine globale Traversierung voraus. Ein unbeschränktes Auslesen fremder Ordnerinhalte würde das Schutzkonzept untergraben. Da sich dieser Zielkonflikt im Rahmen des Rebases nicht trivial auflösen ließ, wurden \texttt{sys\_readdir} und \texttt{cwd} vorerst deaktiviert, während rein kosmetische Compilerwarnungen in \texttt{naming/lib.rs} zunächst zurückgestellt wurden.
-
+Beim Naming-Modul gab es einen grundlegenden Konflikt zwischen dem klassischen Dateisystem und dem Capability-Modell. Nach dem Capability-Prinzip darf ein Prozess nicht einfach auf alle Ordner zugreifen, sondern nur auf Bereiche, für die er ein passendes Capability-Handle besitzt. Funktionen wie \texttt{sys\_readdir} oder das Verwalten des Arbeitsverzeichnisses (\texttt{cwd} in \texttt{naming/lib.rs}) müssen jedoch Verzeichnisse frei durchsuchen können. Weil ein unkontrollierter Zugriff auf fremde Ordner das Sicherheitskonzept aushebeln würde, wurden \texttt{sys\_readdir} und \texttt{cwd} beim Rebase vorerst abgeschaltet.
 
 \subsection{Überarbeitung des Syscall-Dispatchers und Low-Level-Register-Management}
 
 Die weitreichendsten Änderungen erfolgten im Assembly-Dispatcher des Kernels:
 
 \begin{itemize}
-    \item \textbf{Ablösung der Syscall-Table:} Die ehemals statische Systemaufruf-Tabelle des Hauptsystems wurde entfernt. Stattdessen wird jeder Systemaufruf dynamisch über \texttt{get\_capability\_entry()} aufgelöst, womit die Autorisierung fest in den Dispatching-Pfad eingebettet ist.
+    \item \textbf{Ablösung der Syscall-Table:} Die Syscall-Tabelle wurde entfernt. Stattdessen wird jeder Systemaufruf dynamisch über \texttt{get\_capability\_entry()} aufgelöst, womit die Autorisierung fest in den Dispatching-Pfad eingebettet ist.
     \item \textbf{Registersicherung für \texttt{get\_capability\_entry}:} Da der Aufruf von \texttt{get\_capability\_entry} Register überschreiben würde, müssen die CPU-Register an dieser Stelle im Dispatcher erneut gesichert werden (\texttt{// Save all Registers again because get\_capability\_entry would overwrite them}).
-    \item \textbf{Entfernen von \texttt{r12}--\texttt{r15} und Register-Begradigung:} Die Callee-Saved-Register \texttt{r12}, \texttt{r13}, \texttt{r14} und \texttt{r15} wurden im Zuge der Systemweiterentwicklung an dieser Stelle nicht mehr benötigt. Um den Stack-Overhead während der zusätzlichen Sicherung zu minimieren und den Mehraufwand zu kompensieren, wurden \texttt{push}- und \texttt{pop}-Operationen für \texttt{r12}--\texttt{r15} vollständig aus dem Dispatcher entfernt.
-    \item \textbf{Korrektur der Stack-Reihenfolge:} Die Wiederherstellung von \texttt{rbx} wurde korrigiert und logisch hinter \texttt{rcx} eingereiht, um eine korrekte Stack-Ausrichtung zu gewährleisten und Fehlbelegungen bei der Rückkehr aus dem Trap-Handler auszuschließen.
+    \item \textbf{Entfernen von \texttt{r12}--\texttt{r15}} Die Callee-Saved-Register \texttt{r12}, \texttt{r13}, \texttt{r14} und \texttt{r15} wurden an dieser Stelle nicht mehr benötigt. Um den Stack-Overhead während der zusätzlichen Sicherung zu minimieren, wurden \texttt{push}- und \texttt{pop}-Operationen für \texttt{r12}--\texttt{r15} vollständig aus dem Dispatcher entfernt.
+    \item \textbf{Korrektur der Stack-Reihenfolge:} Die Wiederherstellung von \texttt{rbx} wurde korrigiert und hinter \texttt{rcx} eingereiht, um eine korrekte Stack-Ausrichtung zu gewährleisten und Fehlbelegungen bei der Rückkehr aus dem Syscall auszuschließen.
 \end{itemize}
 
 
 \subsection{Testumgebung und Verifikation (\texttt{api.rs}, \texttt{test/pipe-rs})}
 
-Um die korrekte Funktion des zusammengeführten Kernels zu verifizieren, wurde die Test-Suite isoliert:
+Um die korrekte Funktion des zusammengeführten Kernels zu verifizieren, wurden folgende Tests durchgeführt:
 
 \begin{itemize}
     \item In \texttt{api.rs} wurden gezielte Funktionstests für die Capability-Schnittstellen integriert.
-    \item In \texttt{test/pipe-rs} wurden neuere Testfälle (\texttt{test1} und \texttt{test2}) temporär aus der Testausführung entfernt. Auf diese Weise konnte das Zusammenspiel aus Interprozesskommunikation (Pipes) und CSpaces deterministisch und frei von Nebeneffekten anderer, noch in Entwicklung befindlicher Subsysteme validiert werden.
+    \item In \texttt{test/pipe-rs} wurden neuere Testfälle (\texttt{test1} und \texttt{test2}) temporär aus der Testausführung entfernt. Auf diese Weise konnte die Verbindung zwischen Interprozesskommunikation (Pipes) und CSpaces frei von Nebeneffekten anderer, noch in Entwicklung befindlicher Subsysteme validiert werden.
 \end{itemize}
